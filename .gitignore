@@ -1,6 +1,93 @@
-/myvenv
-/LicensePlate/__pycache__
-/LicensePlate/test_footage
+# ============================
+# Python
+# ============================
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+*.pkl
 
-/ParkingSpace/__pycache__
-/ParkingSpace/test_footage
+# Virtual environment
+venv/
+.env/
+.venv/
+
+# Environment variables
+*.env
+.env.*
+!.env.example
+
+# Byte-compiled / optimized / DLL files
+*.so
+
+# ============================
+# FastAPI / Uvicorn
+# ============================
+# Uvicorn log files
+*.log
+
+# ============================
+# Alembic (nếu dùng DB migrations)
+# ============================
+alembic/*/versions/*.pyc
+alembic.ini~
+alembic/versions/*.pyc
+
+# Ignore SQLite DB
+*.db
+*.sqlite3
+data/
+data/db/
+mongodb-data/
+
+# ============================
+# Testing / Pytest
+# ============================
+.pytest_cache/
+.coverage
+.htmlcov/
+pytestdebug.log
+
+# ============================
+# MyPy / Type Checking
+# ============================
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# ============================
+# Build / Distribution
+# ============================
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ============================
+# IDE / Editor
+# ============================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ============================
+# Docker
+# ============================
+# Docker files
+docker-compose.override.yml
+
+# ============================
+# Logs / Temp
+# ============================
+*.log
+logs/
+tmp/
+temp/
+
+# ============================
+# OS-specific
+# ============================
+.DS_Store
+Thumbs.db

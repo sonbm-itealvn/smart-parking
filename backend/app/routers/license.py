@@ -1,71 +1,67 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException, Query
 from fastapi.responses import StreamingResponse
 import io
-import csv
-import numpy as np
-import cv2
-from pathlib import Path
+from datetime import datetime
 
-from ..services.models import get_lp_model, get_ocr_reader, LICENSE_LOG_PATH
-from ..utils.images import bytes_to_cv2_image, cv2_image_to_png_bytes, normalize_img_rgb
-
+from ..services.license_plate import detect_license_plates
+from ..services.license_logs import read_logs
+from ..models import VehicleEventCreate
+from ..services import history_service, presence_service
+from ..utils.images import bytes_to_cv2_image, cv2_image_to_png_bytes
 
 router = APIRouter()
 
 
 @router.post("/detect")
-async def detect(image: UploadFile = File(...)):
+async def detect(
+    image: UploadFile = File(...),
+    event_type: str | None = Query(None, pattern="^(entry|exit)$"),
+    spot_id: str | None = None,
+    source: str | None = None,
+):
     try:
         data = await image.read()
         frame_bgr = bytes_to_cv2_image(data)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid image: {e}")
 
-    model = get_lp_model()
-    reader = get_ocr_reader()
+    result = detect_license_plates(frame_bgr, log_results=True)
+    timestamp = datetime.utcnow()
+    for plate in result.texts:
+        effective_event = event_type
+        if effective_event is None:
+            is_inside = await presence_service.is_present(plate)
+            effective_event = "exit" if is_inside else "entry"
+        event = await history_service.record_event(
+            VehicleEventCreate(
+                plate=plate,
+                event_type=effective_event,
+                spot_id=spot_id,
+                source=source or "license-camera",
+                timestamp=timestamp,
+            )
+        )
+        if effective_event == "entry":
+            await presence_service.mark_entry(
+                event.plate,
+                event_id=event.id,
+                spot_id=spot_id,
+                source=source or "license-camera",
+                timestamp=event.timestamp,
+            )
+        else:
+            await presence_service.mark_exit(event.plate, timestamp=event.timestamp)
 
-    results = model.predict(frame_bgr, conf=0.6, verbose=False)
-    r = results[0]
-
-    plotted = r.plot(conf=False, labels=False)
-    annotated_bgr = plotted[..., ::-1]
-
-    texts = []
-
-    boxes = r.boxes.xyxy.cpu().numpy() if r.boxes is not None else np.empty((0, 4))
-    for box in boxes:
-        x1, y1, x2, y2 = map(int, box)
-        x1 = max(0, x1)
-        y1 = max(0, y1)
-        x2 = max(x1 + 1, x2)
-        y2 = max(y1 + 1, y2)
-        crop_bgr = frame_bgr[y1:y2, x1:x2]
-        if crop_bgr.size == 0:
-            continue
-        crop_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
-        norm_rgb = normalize_img_rgb(crop_rgb)
-        result = reader.readtext(norm_rgb)
-        if result:
-            s = result[0][1]
-            texts.append(s)
-
-    png_bytes = cv2_image_to_png_bytes(annotated_bgr)
-    return StreamingResponse(io.BytesIO(png_bytes), media_type="image/png", headers={"X-Recognized-Texts": ";".join(texts)})
+    png_bytes = cv2_image_to_png_bytes(result.annotated_bgr)
+    return StreamingResponse(
+        io.BytesIO(png_bytes),
+        media_type="image/png",
+        headers={"X-Recognized-Texts": ";".join(result.texts)},
+    )
 
 
 @router.get("/logs")
 def logs():
-    logs = []
-    if not LICENSE_LOG_PATH.exists():
-        return {"logs": logs}
-    with LICENSE_LOG_PATH.open("r", newline="", encoding="utf-8") as f:
-        rdr = csv.reader(f)
-        for row in rdr:
-            if not row:
-                continue
-            plate = row[0]
-            ts = row[1] if len(row) > 1 else None
-            logs.append({"plate": plate, "timestamp": ts})
-    return {"logs": logs}
+    return {"logs": read_logs()}
 
 

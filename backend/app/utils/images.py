@@ -1,8 +1,10 @@
-from typing import Tuple
+from typing import Dict, Tuple
 import io
 import numpy as np
 import cv2
 from PIL import Image
+
+from ..config import SETTINGS
 
 
 def bytes_to_cv2_image(data: bytes) -> np.ndarray:
@@ -25,33 +27,49 @@ def euclid_dist(pt1: Tuple[int, int], pt2: Tuple[int, int]) -> float:
     return float(np.hypot(pt2[0] - pt1[0], pt2[1] - pt1[1]))
 
 
-def draw_path(frame_bgr: np.ndarray, start: Tuple[int, int], spot_xyxy: np.ndarray) -> np.ndarray:
-    landmarks = {
-        0: start,
-        1: [100, 100],
-        2: [80, 165],
-        3: [60, 300],
-    }
+def draw_path(
+    frame_bgr: np.ndarray,
+    start: Tuple[int, int],
+    spot_xyxy: np.ndarray,
+    landmarks: Dict[int, Tuple[int, int]] | None = None,
+) -> np.ndarray:
+    # Ensure contiguous array for OpenCV drawing operations
+    frame_bgr = frame_bgr.copy()
+    landmarks = dict(landmarks or SETTINGS.parking_landmarks)
+    landmarks[0] = start
     cx = int((spot_xyxy[0] + spot_xyxy[2]) / 2)
     spot_check = (cx, int(spot_xyxy[1]))
 
     best_landmark = 0
     min_dist = euclid_dist(spot_check, tuple(landmarks[best_landmark]))
 
-    for i in list(landmarks.keys()):
-        cv2.circle(frame_bgr, tuple(landmarks[i]), 4, (0, 255, 0), -1)
-        d = euclid_dist(spot_check, tuple(landmarks[i]))
+    for key in sorted(landmarks.keys()):
+        point = tuple(landmarks[key])
+        cv2.circle(frame_bgr, point, 4, (0, 255, 0), -1)
+        d = euclid_dist(spot_check, point)
         if d < min_dist:
             min_dist = d
-            best_landmark = i
+            best_landmark = key
 
-    for i in list(landmarks.keys()):
-        if i == 0:
+    last_key = 0
+    for key in sorted(k for k in landmarks.keys() if k <= best_landmark):
+        if key == 0:
             continue
-        if i > best_landmark:
-            break
-        frame_bgr = cv2.line(frame_bgr, tuple(landmarks[i - 1]), tuple(landmarks[i]), (0, 255, 0), 3)
-    frame_bgr = cv2.line(frame_bgr, tuple(landmarks[best_landmark]), spot_check, (0, 255, 0), 3)
+        frame_bgr = cv2.line(
+            frame_bgr,
+            tuple(landmarks[last_key]),
+            tuple(landmarks[key]),
+            (0, 255, 0),
+            3,
+        )
+        last_key = key
+    frame_bgr = cv2.line(
+        frame_bgr,
+        tuple(landmarks[best_landmark]),
+        spot_check,
+        (0, 255, 0),
+        3,
+    )
     return frame_bgr
 
 
