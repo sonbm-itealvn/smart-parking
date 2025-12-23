@@ -5,46 +5,78 @@ An end-to-end parking assistant that combines two capabilities:
 - **License plate recognition** - detect vehicles and read their plates using YOLO + EasyOCR.
 - **Parking recommendation** - highlight the closest available parking spot and visualize the driving path.
 
-The entire business logic now lives in the `backend/` FastAPI service. The legacy `LicensePlate/` and `ParkingSpace/` folders only provide lightweight CLI wrappers that reuse the backend services for quick local testing.
+The entire business logic lives in the `backend/` FastAPI service. CLI scripts in `scripts/` provide lightweight wrappers for quick local testing.
 
 ## Repository layout
 
 ```
-backend/               # FastAPI application + shared services/config
-  app/
-    config.py
-    routers/           # HTTP endpoints
-    services/          # YOLO + OCR pipelines
-    utils/
-LicensePlate/          # CLI wrapper around backend license-plate service
-ParkingSpace/          # CLI wrapper around backend parking service
-models/                # YOLO weights for each task
+smart-paking-ai/
+├── backend/              # FastAPI application + shared services/config
+│   ├── app/
+│   │   ├── config.py     # Centralized configuration
+│   │   ├── routers/      # HTTP endpoints
+│   │   ├── services/     # YOLO + OCR pipelines
+│   │   ├── models/       # Pydantic schemas
+│   │   └── utils/        # Utilities (MongoDB, images)
+│   ├── main.py           # FastAPI entry point
+│   └── requirements.txt  # Python dependencies
+├── models/               # Centralized YOLO model weights
+│   ├── parking/
+│   │   └── best.pt
+│   └── license_plate/
+│       └── best.pt
+├── scripts/              # CLI tools for local testing
+│   ├── license_plate.py  # License plate detection CLI
+│   └── parking_space.py  # Parking recommendation CLI
+└── tests/                # Test data and outputs
+    ├── license_plate/
+    └── parking_space/
 ```
 
-## Setup
+## Quick Start
 
-1. Create a virtual environment (optional) and install dependencies:
+### Setup
+
+1. Create a virtual environment (recommended):
+   ```bash
+   python -m venv venv
+   # Windows
+   venv\Scripts\activate
+   # Linux/Mac
+   source venv/bin/activate
+   ```
+
+2. Install dependencies:
    ```bash
    pip install -r backend/requirements.txt
    ```
-2. Run the FastAPI server:
+
+3. Run the FastAPI server:
    ```bash
+   # Windows
+   run_server.bat
+   # Linux/Mac
+   chmod +x run_server.sh
+   ./run_server.sh
+   # Or manually:
    uvicorn backend.main:app --reload
    ```
 
+The server will start at `http://localhost:8000`. Visit `http://localhost:8000/docs` for interactive API documentation.
+
 ## CLI usage
 
-Both CLI scripts now delegate to the backend services but run without HTTP:
+Both CLI scripts delegate to the backend services but run without HTTP:
 
 ```bash
 # License plate detection
-python LicensePlate/app.py path/to/video.mp4
+python scripts/license_plate.py path/to/video.mp4
 
 # Parking recommendation
-python ParkingSpace/app.py path/to/video.mp4
+python scripts/parking_space.py path/to/video.mp4
 ```
 
-Use `--output-dir <path>` to store debug frames somewhere else (defaults to each module's `tests/` directory).
+Use `--output-dir <path>` to store debug frames somewhere else (defaults to `tests/license_plate/` or `tests/parking_space/`).
 
 ## HTTP endpoints
 

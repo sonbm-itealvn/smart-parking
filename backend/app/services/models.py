@@ -25,5 +25,7 @@ def get_lp_model() -> YOLO:
 def get_ocr_reader() -> easyocr.Reader:
     global _ocr_reader
     if _ocr_reader is None:
-        _ocr_reader = easyocr.Reader(["en"])  # load once
+        # Sử dụng cả tiếng Anh và số để đọc biển số Việt Nam tốt hơn
+        # Biển số VN chủ yếu là số và chữ cái Latin (A-Z)
+        _ocr_reader = easyocr.Reader(["en"], gpu=False)  # load once
     return _ocr_reader

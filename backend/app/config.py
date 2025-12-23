@@ -11,9 +11,9 @@ class Settings:
     """Central configuration for models, logging, and heuristics."""
 
     repo_root: Path = Path(__file__).resolve().parents[2]
-    parking_model_path: Path = repo_root / "ParkingSpace" / "models" / "best.pt"
-    license_model_path: Path = repo_root / "LicensePlate" / "models" / "best.pt"
-    license_log_path: Path = repo_root / "LicensePlate" / "log.csv"
+    parking_model_path: Path = repo_root / "models" / "parking" / "best.pt"
+    license_model_path: Path = repo_root / "models" / "license_plate" / "best.pt"
+    license_log_path: Path = repo_root / "tests" / "license_plate" / "log.csv"
     license_confidence: float = float(os.getenv("LICENSE_CONFIDENCE", "0.6"))
     parking_confidence: float = float(os.getenv("PARKING_CONFIDENCE", "0.6"))
     parking_entry_point: Tuple[int, int] = (110, 5)

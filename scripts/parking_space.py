@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Optional, Union
 
 import cv2
 
+# Add parent directory to path to import backend modules
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from backend.app.services.parking_service import recommend_from_frame
 from backend.app.services.tracker import CentroidTracker
 
 
-DEFAULT_OUTPUT_DIR = Path(__file__).parent / "tests"
+DEFAULT_OUTPUT_DIR = Path(__file__).parent.parent / "tests" / "parking_space"
 
 
 def _resolve_source(source: str) -> Union[int, str]:
@@ -92,3 +96,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

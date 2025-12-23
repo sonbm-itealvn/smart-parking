@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Union
 
 import cv2
 
+# Add parent directory to path to import backend modules
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from backend.app.services.license_plate import detect_license_plates
 
 
-DEFAULT_OUTPUT_DIR = Path(__file__).parent / "tests"
+DEFAULT_OUTPUT_DIR = Path(__file__).parent.parent / "tests" / "license_plate"
 
 
 def _resolve_source(source: str) -> Union[int, str]:
