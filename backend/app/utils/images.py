@@ -3,12 +3,48 @@ import io
 import numpy as np
 import cv2
 from PIL import Image
+import requests
 
 from ..config import SETTINGS
 
 
 def bytes_to_cv2_image(data: bytes) -> np.ndarray:
     image = Image.open(io.BytesIO(data))
+    return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+
+
+def url_to_cv2_image(url: str, timeout: int = 30) -> np.ndarray:
+    """
+    Fetch an image from a URL and convert it to OpenCV BGR format.
+    
+    Args:
+        url: The URL of the image to fetch
+        timeout: Request timeout in seconds (default: 30)
+    
+    Returns:
+        numpy array in BGR format (compatible with cv2)
+    
+    Raises:
+        requests.RequestException: If the request fails
+        ValueError: If the response is not a valid image
+    """
+    response = requests.get(url, timeout=timeout, stream=True)
+    response.raise_for_status()
+    
+    # Check content type
+    content_type = response.headers.get('content-type', '').lower()
+    if not content_type.startswith('image/'):
+        raise ValueError(f"URL does not point to an image. Content-Type: {content_type}")
+    
+    # Read image data
+    image_data = response.content
+    image = Image.open(io.BytesIO(image_data))
+    
+    # Convert to RGB if needed (PIL opens as RGB)
+    if image.mode != 'RGB':
+        image = image.convert('RGB')
+    
+    # Convert to numpy array and then to BGR for OpenCV
     return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
 
 

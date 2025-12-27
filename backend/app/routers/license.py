@@ -8,32 +8,62 @@ from ..services.license_plate import detect_license_plates
 from ..services.license_logs import read_logs
 from ..models import VehicleEventCreate
 from ..services import history_service, presence_service
-from ..utils.images import bytes_to_cv2_image, cv2_image_to_png_bytes
+from ..utils.images import bytes_to_cv2_image, cv2_image_to_png_bytes, url_to_cv2_image
 
 router = APIRouter()
 
 
 @router.post("/detect")
 async def detect(
-    image: UploadFile = File(...),
+    image: UploadFile | None = File(None),
+    image_url: str | None = Query(None, description="URL of the image to process"),
     event_type: str | None = Query(None, pattern="^(entry|exit)$"),
     spot_id: str | None = None,
     source: str | None = None,
     format: str = Query("json", pattern="^(json|image)$"),
 ):
     """
-    Detect license plates in an uploaded image.
+    Detect license plates in an uploaded image or from an image URL.
     
+    Either `image` (file upload) or `image_url` must be provided.
+    
+    - **image**: Uploaded image file (optional if image_url is provided)
+    - **image_url**: URL of the image to fetch and process (optional if image is provided)
     - **format**: Response format - "json" (default) returns JSON with text and image, "image" returns PNG image only
     - **event_type**: Optional event type ("entry" or "exit"). If not provided, auto-detects based on presence
     - **spot_id**: Optional parking spot ID
     - **source**: Optional source identifier
     """
+    # Validate that at least one input method is provided
+    if image is None and image_url is None:
+        raise HTTPException(
+            status_code=400, 
+            detail="Either 'image' (file upload) or 'image_url' parameter must be provided"
+        )
+    
+    if image is not None and image_url is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Please provide either 'image' (file upload) OR 'image_url', not both"
+        )
+    
     try:
-        data = await image.read()
-        frame_bgr = bytes_to_cv2_image(data)
+        if image_url:
+            # Fetch image from URL
+            frame_bgr = url_to_cv2_image(image_url)
+        else:
+            # Read uploaded file
+            data = await image.read()
+            frame_bgr = bytes_to_cv2_image(data)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid image: {e}")
+        error_msg = str(e)
+        if image_url:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Failed to fetch or process image from URL '{image_url}': {error_msg}"
+            )
+        else:
+            raise HTTPException(status_code=400, detail=f"Invalid image: {error_msg}")
 
     result = detect_license_plates(frame_bgr, log_results=True)
     timestamp = datetime.utcnow()
