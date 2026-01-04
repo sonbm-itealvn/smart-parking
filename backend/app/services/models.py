@@ -1,11 +1,17 @@
 from ultralytics import YOLO
-import easyocr
+from transformers import TrOCRProcessor, VisionEncoderDecoderModel
+from PIL import Image
+from typing import TYPE_CHECKING
 
 from ..config import SETTINGS
 
+if TYPE_CHECKING:
+    from transformers import TrOCRProcessor, VisionEncoderDecoderModel
+
 _ps_model = None
 _lp_model = None
-_ocr_reader = None
+_ocr_processor = None
+_ocr_model = None
 
 
 def get_parking_model() -> YOLO:
@@ -22,10 +28,20 @@ def get_lp_model() -> YOLO:
     return _lp_model
 
 
-def get_ocr_reader() -> easyocr.Reader:
-    global _ocr_reader
-    if _ocr_reader is None:
-        # Sử dụng cả tiếng Anh và số để đọc biển số Việt Nam tốt hơn
-        # Biển số VN chủ yếu là số và chữ cái Latin (A-Z)
-        _ocr_reader = easyocr.Reader(["en"], gpu=False)  # load once
-    return _ocr_reader
+def get_ocr_processor() -> "TrOCRProcessor":
+    """Lấy TrOCR processor để preprocess ảnh"""
+    global _ocr_processor
+    if _ocr_processor is None:
+        # Sử dụng model TrOCR cho printed text (tốt cho biển số)
+        _ocr_processor = TrOCRProcessor.from_pretrained("microsoft/trocr-base-printed")
+    return _ocr_processor
+
+
+def get_ocr_model() -> "VisionEncoderDecoderModel":
+    """Lấy TrOCR model để đọc text"""
+    global _ocr_model
+    if _ocr_model is None:
+        # Sử dụng model TrOCR cho printed text (tốt cho biển số)
+        _ocr_model = VisionEncoderDecoderModel.from_pretrained("microsoft/trocr-base-printed")
+        _ocr_model.eval()  # Set to evaluation mode
+    return _ocr_model
