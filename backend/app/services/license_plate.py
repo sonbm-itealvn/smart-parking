@@ -151,6 +151,37 @@ def _validate_and_format_plate_text(text: str) -> str:
     return text.strip()
 
 
+def _is_valid_plate_text(text: str) -> bool:
+    """
+    Kiểm tra xem text có giống biển số xe Việt Nam không.
+    Biển số VN thường có: số-số-chữ-số hoặc số-chữ số.số
+    """
+    if not text or len(text.strip()) < 2:
+        return False
+    
+    # Loại bỏ khoảng trắng và dấu gạch ngang để kiểm tra
+    clean_text = re.sub(r'[\s\-.]', '', text.upper())
+    
+    # Phải có ít nhất 1 chữ số và có thể có chữ cái
+    if not re.search(r'[0-9]', clean_text):
+        return False
+    
+    # Độ dài hợp lý cho biển số (từ 4 đến 12 ký tự sau khi loại bỏ khoảng trắng)
+    if len(clean_text) < 4 or len(clean_text) > 12:
+        return False
+    
+    # Không được có quá nhiều ký tự đặc biệt
+    special_chars = len(re.findall(r'[^A-Z0-9]', text))
+    if special_chars > len(text) * 0.3:  # Không quá 30% là ký tự đặc biệt
+        return False
+    
+    # Phải có ít nhất một chữ số liên tiếp (ít nhất 2 số)
+    if not re.search(r'[0-9]{2,}', clean_text):
+        return False
+    
+    return True
+
+
 def _run_trocr_ocr(img_rgb: np.ndarray, processor, model) -> tuple[str, float]:
     """
     Chạy TrOCR trên ảnh và trả về (text, confidence).
@@ -158,28 +189,53 @@ def _run_trocr_ocr(img_rgb: np.ndarray, processor, model) -> tuple[str, float]:
     """
     try:
         # Convert numpy array to PIL Image
+        # Đảm bảo ảnh có kích thước hợp lý
+        h, w = img_rgb.shape[:2]
+        if h < 10 or w < 10:
+            return ("", 0.0)
+        
         pil_image = Image.fromarray(img_rgb)
         
         # Preprocess với processor
         pixel_values = processor(images=pil_image, return_tensors="pt").pixel_values
         
-        # Generate text
+        # Generate text với max_length hợp lý cho biển số
         with torch.no_grad():
-            generated_ids = model.generate(pixel_values)
+            generated_ids = model.generate(
+                pixel_values,
+                max_length=20,  # Giới hạn độ dài cho biển số
+                num_beams=5,   # Beam search để có kết quả tốt hơn
+            )
             generated_text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
         
-        # TrOCR không có confidence score, nhưng ta có thể estimate dựa trên độ dài và format
-        # Nếu text hợp lệ và có độ dài phù hợp, confidence cao
+        # Làm sạch text
         text = generated_text.strip()
-        if len(text) >= 2:
-            # Heuristic: confidence dựa trên độ dài và format hợp lệ
-            confidence = min(0.95, 0.5 + len(text) * 0.05)
-            # Nếu text có format giống biển số (có số và chữ), tăng confidence
-            if re.search(r'[0-9]', text) and re.search(r'[A-Z]', text):
-                confidence = min(0.98, confidence + 0.1)
-            return (text, confidence)
-        return ("", 0.0)
-    except Exception:
+        
+        # Kiểm tra tính hợp lệ của text
+        if not _is_valid_plate_text(text):
+            return ("", 0.0)
+        
+        # Tính confidence dựa trên format và độ dài
+        confidence = 0.5
+        
+        # Tăng confidence nếu có format giống biển số
+        if re.search(r'[0-9]', text) and re.search(r'[A-Z]', text):
+            confidence += 0.2
+        
+        # Tăng confidence nếu có dấu gạch ngang hoặc khoảng trắng (format chuẩn)
+        if '-' in text or ' ' in text:
+            confidence += 0.1
+        
+        # Tăng confidence nếu độ dài hợp lý (6-10 ký tự)
+        if 6 <= len(text.replace(' ', '').replace('-', '')) <= 10:
+            confidence += 0.1
+        
+        confidence = min(0.95, confidence)
+        
+        return (text, confidence)
+    except Exception as e:
+        # Log lỗi để debug (có thể bỏ sau)
+        # print(f"TrOCR error: {e}")
         return ("", 0.0)
 
 
@@ -227,14 +283,20 @@ def detect_license_plates(frame_bgr: np.ndarray, *, log_results: bool = False) -
         for method_name, processed_img, is_split in processed_images:
             try:
                 # Chạy TrOCR
-                ocr_text, ocr_confidence = _run_trocr_ocr(processed_img, processor, ocr_model)
+                ocr_text_raw, ocr_confidence = _run_trocr_ocr(processed_img, processor, ocr_model)
                 
-                if not ocr_text or len(ocr_text.strip()) < 2:
+                if not ocr_text_raw or len(ocr_text_raw.strip()) < 2:
                     continue
                 
                 # Lọc text (giữ dấu chấm vì có thể là "535.07")
-                ocr_text_clean = re.sub(r'[^A-Z0-9\s\-.]', '', ocr_text.upper())
+                ocr_text_clean = re.sub(r'[^A-Z0-9\s\-.]', '', ocr_text_raw.upper())
                 ocr_text_clean = re.sub(r'\s+', ' ', ocr_text_clean).strip()
+                
+                # Kiểm tra lại tính hợp lệ sau khi lọc
+                if not _is_valid_plate_text(ocr_text_clean):
+                    # Debug: log text không hợp lệ (có thể bỏ sau)
+                    # print(f"Invalid plate text from {method_name}: '{ocr_text_raw}' -> '{ocr_text_clean}'")
+                    continue
                 
                 if len(ocr_text_clean.strip()) >= 2:
                     # Phân loại kết quả
@@ -248,6 +310,7 @@ def detect_license_plates(frame_bgr: np.ndarray, *, log_results: bool = False) -
                         
             except Exception as e:
                 # Bỏ qua lỗi và thử method tiếp theo
+                # print(f"Error in OCR method {method_name}: {e}")
                 continue
         
         # Combine kết quả từ top và bottom nếu có
@@ -263,14 +326,20 @@ def detect_license_plates(frame_bgr: np.ndarray, *, log_results: bool = False) -
             # Format lại
             combined_text = _validate_and_format_plate_text(combined_text)
             
-            if len(combined_text.strip()) >= 2:
+            # Kiểm tra lại tính hợp lệ sau khi combine
+            if _is_valid_plate_text(combined_text) and len(combined_text.strip()) >= 2:
                 full_results.append((combined_text, combined_confidence))
         
         # Chọn kết quả tốt nhất từ tất cả các phương pháp
         if full_results:
-            # Ưu tiên kết quả dài hơn và có confidence cao hơn
-            best_result = max(full_results, key=lambda x: (len(x[0]), x[1]))
-            best_text, best_confidence = best_result
+            # Ưu tiên kết quả có confidence cao nhất, sau đó là độ dài
+            # Nhưng chỉ chọn kết quả hợp lệ
+            valid_results = [(t, c) for t, c in full_results if _is_valid_plate_text(t)]
+            if valid_results:
+                best_result = max(valid_results, key=lambda x: (x[1], len(x[0])))
+                best_text, best_confidence = best_result
+            else:
+                best_result = None
         
         # Sử dụng kết quả tốt nhất
         if best_result and len(best_text.strip()) >= 2:
