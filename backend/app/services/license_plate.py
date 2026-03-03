@@ -166,9 +166,18 @@ def _is_valid_plate_text(text: str) -> bool:
     if not re.search(r'[0-9]', clean_text):
         return False
     
-    # Độ dài hợp lý cho biển số (từ 4 đến 12 ký tự sau khi loại bỏ khoảng trắng)
-    if len(clean_text) < 4 or len(clean_text) > 12:
+    # Độ dài hợp lý cho biển số:
+    # - Biển đầy đủ: từ 4 đến 12 ký tự sau khi loại bỏ khoảng trắng
+    # - Hàng trên của biển 2 dòng (ví dụ: "30G"): 3 ký tự với pattern 2 số + 1 chữ cái
+    clean_len = len(clean_text)
+    if clean_len > 12:
         return False
+    if clean_len < 3:
+        return False
+    if clean_len == 3:
+        # Chỉ chấp nhận dạng 2 số + 1 chữ cái (ví dụ: "30G")
+        if not re.match(r"^\d{2}[A-Z]$", clean_text):
+            return False
     
     # Không được có quá nhiều ký tự đặc biệt
     special_chars = len(re.findall(r'[^A-Z0-9]', text))
