@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import List, Dict, Any
+import base64
 import re
 
 import cv2
 import numpy as np
 from PIL import Image
 import torch
+from openai import OpenAI
 
 from ..config import SETTINGS
 from ..utils.images import preprocess_license_plate_for_ocr
@@ -168,15 +170,15 @@ def _is_valid_plate_text(text: str) -> bool:
     
     # Độ dài hợp lý cho biển số:
     # - Biển đầy đủ: từ 4 đến 12 ký tự sau khi loại bỏ khoảng trắng
-    # - Hàng trên của biển 2 dòng (ví dụ: "30G"): 3 ký tự với pattern 2 số + 1 chữ cái
+    # - Hàng trên của biển 2 dòng (ví dụ: "30G"): 3 ký tự, có cả số và chữ
     clean_len = len(clean_text)
     if clean_len > 12:
         return False
     if clean_len < 3:
         return False
     if clean_len == 3:
-        # Chỉ chấp nhận dạng 2 số + 1 chữ cái (ví dụ: "30G")
-        if not re.match(r"^\d{2}[A-Z]$", clean_text):
+        # Chấp nhận chuỗi 3 ký tự có cả số và chữ cái
+        if not (re.search(r"[0-9]", clean_text) and re.search(r"[A-Z]", clean_text)):
             return False
     
     # Không được có quá nhiều ký tự đặc biệt
@@ -191,65 +193,134 @@ def _is_valid_plate_text(text: str) -> bool:
     return True
 
 
-def _run_trocr_ocr(img_rgb: np.ndarray, processor, model) -> tuple[str, float]:
+_PLATE_PATTERN = re.compile(r"(\d{2,3}[A-Z]-?\d{5})")
+
+
+def _format_plate_standard(plate: str) -> str:
     """
-    Chạy TrOCR trên ảnh và trả về (text, confidence).
-    TrOCR không trả về confidence trực tiếp, nên ta dùng heuristic.
+    Chuẩn hóa về dạng chuẩn: 30G-12345
+    - 2–3 số đầu
+    - 1 chữ cái
+    - 5 số cuối
+    """
+    cleaned = plate.upper().replace(" ", "").replace(".", "").replace("_", "")
+    match = _PLATE_PATTERN.search(cleaned)
+    if not match:
+        return ""
+    token = match.group(1).replace("-", "")
+    prefix = token[:-5]
+    digits = token[-5:]
+    return f"{prefix}-{digits}"
+
+
+_openai_client: OpenAI | None = None
+
+
+def _get_openai_client() -> OpenAI:
+    global _openai_client
+    if _openai_client is None:
+        _openai_client = OpenAI()
+    return _openai_client
+
+
+def _run_gpt_ocr(img_bgr: np.ndarray) -> tuple[str, float]:
+    """
+    Sử dụng OpenAI GPT-4.1-mini (vision) để đọc biển số.
+    Trả về chuỗi duy nhất dạng 30G-12345 nếu đọc được, ngược lại trả ("", 0.0).
     """
     try:
-        # Convert numpy array to PIL Image
-        # Đảm bảo ảnh có kích thước hợp lý
-        h, w = img_rgb.shape[:2]
-        if h < 10 or w < 10:
+        # Chuyển ảnh sang PNG base64
+        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        success, buf = cv2.imencode(".png", img_rgb)
+        if not success:
             return ("", 0.0)
-        
-        pil_image = Image.fromarray(img_rgb)
-        
-        # Preprocess với processor
-        pixel_values = processor(images=pil_image, return_tensors="pt").pixel_values
-        
-        # Generate text với max_length hợp lý cho biển số
-        with torch.no_grad():
-            generated_ids = model.generate(
-                pixel_values,
-                max_length=20,  # Giới hạn độ dài cho biển số
-                num_beams=5,   # Beam search để có kết quả tốt hơn
-            )
-            generated_text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-        
-        # Làm sạch text
-        text = generated_text.strip()
-        
-        # Kiểm tra tính hợp lệ của text
-        if not _is_valid_plate_text(text):
+        b64 = base64.b64encode(buf.tobytes()).decode("utf-8")
+
+        client = _get_openai_client()
+        prompt = (
+            "Bạn là hệ thống OCR chuyên đọc biển số xe Việt Nam.\n"
+            "Hãy nhìn vào ảnh và trả về CHỈ MỘT chuỗi biển số theo đúng định dạng:\n"
+            "- 2 hoặc 3 chữ số, sau đó 1 chữ cái in hoa, sau đó dấu gạch ngang '-', sau đó 5 chữ số.\n"
+            "Ví dụ: 30G-49344\n"
+            "Không trả lời gì khác ngoài chuỗi biển số (không giải thích, không xuống dòng)."
+        )
+
+        response = client.responses.create(
+            model="gpt-4.1-mini",
+            input=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": prompt},
+                        {
+                            "type": "input_image",
+                            "image_url": f"data:image/png;base64,{b64}",
+                        },
+                    ],
+                }
+            ],
+        )
+
+        # Lấy text đầu ra
+        raw_text = ""
+        if response.output and response.output[0].content:
+            raw_text = response.output[0].content[0].text or ""
+        candidate = (raw_text or "").strip().upper()
+        plate = _format_plate_standard(candidate)
+
+        # Log debug ra console để dễ kiểm tra
+        print(
+            "[GPT_OCR_DEBUG] raw_text=", repr(raw_text),
+            "| candidate=", repr(candidate),
+            "| formatted_plate=", repr(plate),
+            flush=True,
+        )
+
+        if not plate:
             return ("", 0.0)
-        
-        # Tính confidence dựa trên format và độ dài
-        confidence = 0.5
-        
-        # Tăng confidence nếu có format giống biển số
-        if re.search(r'[0-9]', text) and re.search(r'[A-Z]', text):
-            confidence += 0.2
-        
-        # Tăng confidence nếu có dấu gạch ngang hoặc khoảng trắng (format chuẩn)
-        if '-' in text or ' ' in text:
-            confidence += 0.1
-        
-        # Tăng confidence nếu độ dài hợp lý (6-10 ký tự)
-        if 6 <= len(text.replace(' ', '').replace('-', '')) <= 10:
-            confidence += 0.1
-        
-        confidence = min(0.95, confidence)
-        
-        return (text, confidence)
+        return (plate, 0.9)
     except Exception as e:
-        # Log lỗi để debug (có thể bỏ sau)
-        # print(f"TrOCR error: {e}")
+        # Nếu có lỗi (API, network...) thì coi như không đọc được
+        print("[GPT_OCR_ERROR]", repr(e), flush=True)
         return ("", 0.0)
+
+
+def _normalize_plate_pattern(text: str) -> str:
+    """
+    Chuẩn hóa chuỗi OCR về dạng biển số có:
+    - 2–3 số đầu
+    - 1 chữ cái
+    - 4–5 số cuối
+
+    Nếu bắt được pattern này thì trả đúng phần khớp (ví dụ: "30G 493.44" -> "30G49344").
+    Nếu không bắt được (ví dụ chỉ đọc được "493.64") thì trả về chuỗi đã làm sạch
+    (giữ nguyên các số để không mất dữ liệu).
+    """
+    # Giữ lại chữ và số, bỏ ký tự khác (khoảng trắng, chấm, gạch...)
+    cleaned = re.sub(r"[^A-Z0-9]", "", text.upper())
+    if not cleaned:
+        return ""
+
+    # Cố gắng tìm đúng mẫu: 2–3 số, 1 chữ cái, 4–5 số
+    match = re.search(r"(\d{2,3}[A-Z]\d{4,5})", cleaned)
+    if match:
+        return match.group(1)
+
+    # Nếu không khớp pattern có chữ cái, vẫn trả cleaned (chỉ số hoặc số lẫn chữ)
+    return cleaned
+
+
+def _run_trocr_ocr(img_rgb: np.ndarray, processor, model) -> tuple[str, float]:
+    """
+    Hàm cũ dùng TrOCR – giữ lại để backward compatibility nếu cần.
+    Hiện tại pipeline đã chuyển sang dùng GPT, nên hàm này không còn được gọi.
+    """
+    return ("", 0.0)
 
 
 def detect_license_plates(frame_bgr: np.ndarray, *, log_results: bool = False) -> LicensePlateDetectionResult:
     model = get_lp_model()
+    # Giữ lại để tương thích, nhưng OCR chính dùng GPT
     processor = get_ocr_processor()
     ocr_model = get_ocr_model()
 
@@ -276,88 +347,13 @@ def detect_license_plates(frame_bgr: np.ndarray, *, log_results: bool = False) -
         
         detection_conf = float(confidences[idx]) if idx < len(confidences) else 0.0
         
-        # Thử nhiều phương pháp preprocessing
-        processed_images = _preprocess_plate_image(crop_bgr)
-        
-        best_result = None
-        best_confidence = 0.0
-        best_text = ""
-        
-        # Lưu kết quả từ các phần chia (top/bottom) để combine sau
-        top_results = []
-        bottom_results = []
-        full_results = []
-        
-        # Thử OCR trên tất cả các phiên bản đã preprocess
-        for method_name, processed_img, is_split in processed_images:
-            try:
-                # Chạy TrOCR
-                ocr_text_raw, ocr_confidence = _run_trocr_ocr(processed_img, processor, ocr_model)
-                
-                if not ocr_text_raw or len(ocr_text_raw.strip()) < 2:
-                    continue
-                
-                # Lọc text (giữ dấu chấm vì có thể là "535.07")
-                ocr_text_clean = re.sub(r'[^A-Z0-9\s\-.]', '', ocr_text_raw.upper())
-                ocr_text_clean = re.sub(r'\s+', ' ', ocr_text_clean).strip()
-                
-                # Kiểm tra lại tính hợp lệ sau khi lọc
-                if not _is_valid_plate_text(ocr_text_clean):
-                    # Debug: log text không hợp lệ (có thể bỏ sau)
-                    # print(f"Invalid plate text from {method_name}: '{ocr_text_raw}' -> '{ocr_text_clean}'")
-                    continue
-                
-                if len(ocr_text_clean.strip()) >= 2:
-                    # Phân loại kết quả
-                    if is_split:
-                        if 'top' in method_name:
-                            top_results.append((ocr_text_clean, ocr_confidence))
-                        elif 'bottom' in method_name:
-                            bottom_results.append((ocr_text_clean, ocr_confidence))
-                    else:
-                        full_results.append((ocr_text_clean, ocr_confidence))
-                        
-            except Exception as e:
-                # Bỏ qua lỗi và thử method tiếp theo
-                # print(f"Error in OCR method {method_name}: {e}")
-                continue
-        
-        # Combine kết quả từ top và bottom nếu có
-        if top_results and bottom_results:
-            # Lấy kết quả tốt nhất từ mỗi phần
-            top_text, top_conf = max(top_results, key=lambda x: (x[1], len(x[0])))
-            bottom_text, bottom_conf = max(bottom_results, key=lambda x: (x[1], len(x[0])))
-            
-            # Combine: top + bottom
-            combined_text = f"{top_text} {bottom_text}".strip()
-            combined_confidence = (top_conf + bottom_conf) / 2.0
-            
-            # Format lại
-            combined_text = _validate_and_format_plate_text(combined_text)
-            
-            # Kiểm tra lại tính hợp lệ sau khi combine
-            if _is_valid_plate_text(combined_text) and len(combined_text.strip()) >= 2:
-                full_results.append((combined_text, combined_confidence))
-        
-        # Chọn kết quả tốt nhất từ tất cả các phương pháp
-        if full_results:
-            # Ưu tiên kết quả có confidence cao nhất, sau đó là độ dài
-            # Nhưng chỉ chọn kết quả hợp lệ
-            valid_results = [(t, c) for t, c in full_results if _is_valid_plate_text(t)]
-            if valid_results:
-                best_result = max(valid_results, key=lambda x: (x[1], len(x[0])))
-                best_text, best_confidence = best_result
-            else:
-                best_result = None
-        
-        # Sử dụng kết quả tốt nhất
-        if best_result and len(best_text.strip()) >= 2:
-            ocr_text, ocr_confidence = best_result
-            
-            texts.append(ocr_text)
+        # Dùng GPT-4.1-mini để đọc trực tiếp crop biển số
+        plate_text, ocr_confidence = _run_gpt_ocr(crop_bgr)
+        if plate_text:
+            texts.append(plate_text)
             details.append(
                 LicensePlateInfo(
-                    text=ocr_text,
+                    text=plate_text,
                     confidence=ocr_confidence,
                     bbox=[x1, y1, x2, y2],
                     detection_confidence=detection_conf
@@ -365,7 +361,7 @@ def detect_license_plates(frame_bgr: np.ndarray, *, log_results: bool = False) -
             )
             
             # Vẽ text lên ảnh để dễ kiểm tra
-            label = f"{ocr_text} ({ocr_confidence:.2f})"
+            label = f"{plate_text} ({ocr_confidence:.2f})"
             (text_width, text_height), baseline = cv2.getTextSize(
                 label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2
             )
@@ -387,7 +383,7 @@ def detect_license_plates(frame_bgr: np.ndarray, *, log_results: bool = False) -
             )
             
             if log_results:
-                append_plate(ocr_text)
+                append_plate(plate_text)
 
     return LicensePlateDetectionResult(annotated_bgr=annotated_bgr, texts=texts, details=details)
 

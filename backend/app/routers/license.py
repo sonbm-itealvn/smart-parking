@@ -16,7 +16,12 @@ router = APIRouter()
 @router.post("/detect")
 async def detect(
     image: UploadFile | None = File(None),
-    image_url: str | None = Query(None, description="URL of the image to process"),
+    # Hỗ trợ cả image_url (snake_case) và imageUrl (camelCase) từ frontend
+    image_url: str | None = Query(
+        None,
+        description="URL of the image to process",
+        alias="imageUrl",
+    ),
     event_type: str | None = Query(None, pattern="^(entry|exit)$"),
     spot_id: str | None = None,
     source: str | None = None,

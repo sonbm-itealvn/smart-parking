@@ -5,12 +5,19 @@ from pathlib import Path
 from typing import Dict, Tuple, Optional
 import os
 
+from dotenv import load_dotenv
+
+
+# Load environment variables from project-level .env (if present)
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(_PROJECT_ROOT / ".env")
+
 
 @dataclass(frozen=True)
 class Settings:
     """Central configuration for models, logging, and heuristics."""
 
-    repo_root: Path = Path(__file__).resolve().parents[2]
+    repo_root: Path = _PROJECT_ROOT
     parking_model_path: Path = repo_root / "models" / "parking" / "best.pt"
     license_model_path: Path = repo_root / "models" / "license_plate" / "best.pt"
     license_log_path: Path = repo_root / "tests" / "license_plate" / "log.csv"
